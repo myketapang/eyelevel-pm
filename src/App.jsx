@@ -136,27 +136,40 @@ const App = () => {
 
   // --- DB HELPERS ---
   const fetchProfile = async (userId) => {
-    const { data } = await supabaseInstance.from('profiles').select('*').eq('id', userId).single();
-    if (data) setProfile(data);
+    try {
+      const { data } = await supabaseInstance.from('profiles').select('*').eq('id', userId).single();
+      if (data) setProfile(data);
+    } catch (err) {
+      console.error("Error fetching profile:", err);
+    }
   };
 
   const fetchTasks = async () => {
-    let query = supabaseInstance.from('tasks').select('*');
-    if (profile?.role !== 'admin') query = query.eq('assigned_to', session.user.id);
-    const { data } = await query.order('created_at', { ascending: false });
-    if (data) setTasks(data || []);
+    try {
+      let query = supabaseInstance.from('tasks').select('*');
+      if (profile?.role !== 'admin') query = query.eq('assigned_to', session.user.id);
+      const { data } = await query.order('created_at', { ascending: false });
+      if (data) setTasks(data || []);
+    } catch (err) {
+      console.error("Error fetching tasks:", err);
+    }
   };
 
   const fetchPartners = async () => {
-    const { data } = await supabaseInstance.from('profiles').select('*');
-    if (data) setPartners(data || []);
+    try {
+      const { data } = await supabaseInstance.from('profiles').select('*');
+      if (data) setPartners(data || []);
+    } catch (err) {
+      console.error("Error fetching partners:", err);
+    }
   };
 
   const handleAuth = async (e) => {
     e.preventDefault();
     setLoading(true);
+    setErrorMsg('');
     try {
-      const redirectUrl = window.location.origin; // Dynamically handle redirect back to this site
+      const redirectUrl = window.location.origin;
 
       if (authMode === 'signup') {
         const { error } = await supabaseInstance.auth.signUp({
@@ -177,6 +190,7 @@ const App = () => {
         if (error) throw error;
       }
     } catch (err) {
+      setErrorMsg(err.message);
       alert(err.message);
     } finally {
       setLoading(false);
@@ -187,114 +201,173 @@ const App = () => {
     const nextStatus = task.status === 'Pending' ? 'In Progress' : task.status === 'In Progress' ? 'Completed' : 'Pending';
     const { error } = await supabaseInstance.from('tasks').update({ status: nextStatus }).eq('id', task.id);
     if (!error) fetchTasks();
+    else alert("Failed to update task status");
+  };
+
+  const handleCreateTask = async (e) => {
+    e.preventDefault();
+    try {
+      const { error } = await supabaseInstance.from('tasks').insert([{
+        ...newTask,
+        created_by: session.user.id,
+        status: 'Pending'
+      }]);
+      if (error) throw error;
+      setIsAddingTask(false);
+      setNewTask({ title: '', project: 'General', assigned_to: '', due_date: '' });
+      fetchTasks();
+    } catch (err) {
+      alert("Failed to create task: " + err.message);
+    }
+  };
+
+  const handleDeleteTask = async (taskId) => {
+    if (!confirm("Are you sure you want to delete this task?")) return;
+    const { error } = await supabaseInstance.from('tasks').delete().eq('id', taskId);
+    if (!error) fetchTasks();
+    else alert("Failed to delete task");
   };
 
   // --- STATS ---
   const stats = useMemo(() => {
     const total = tasks.length;
     const completed = tasks.filter(t => t.status === 'Completed').length;
-    const statusData = [
-      { name: 'Pending', value: tasks.filter(t => t.status === 'Pending').length },
-      { name: 'In Progress', value: tasks.filter(t => t.status === 'In Progress').length },
-      { name: 'Completed', value: completed },
-    ];
-    return { total, completed, statusData };
+    const inProgress = tasks.filter(t => t.status === 'In Progress').length;
+    const pending = tasks.filter(t => t.status === 'Pending').length;
+    
+    return {
+      total,
+      completed,
+      inProgress,
+      pending,
+      statusData: [
+        { name: 'Pending', value: pending },
+        { name: 'In Progress', value: inProgress },
+        { name: 'Completed', value: completed },
+      ]
+    };
   }, [tasks]);
 
-  // --- RENDERING ---
-  if (loading) return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50">
-      <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-indigo-600"></div>
-    </div>
-  );
-
-  if (errorMsg && !session) return (
-    <div className="min-h-screen flex items-center justify-center p-6 bg-slate-50 text-center">
-      <div className="bg-white p-12 rounded-[3rem] shadow-xl max-w-md">
-        <AlertCircle className="w-16 h-16 text-red-500 mx-auto mb-6" />
-        <h2 className="text-2xl font-black text-slate-900 mb-4 uppercase">System Setup Required</h2>
-        <p className="text-slate-500 mb-6">{errorMsg}</p>
-        <p className="text-xs text-slate-400 bg-slate-50 p-4 rounded-xl">Please ensure VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are provided in your environment settings.</p>
-      </div>
-    </div>
-  );
-
-  if (!session) return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-100 p-6">
-      <div className="bg-white p-12 rounded-[3rem] shadow-2xl w-full max-w-md border border-white">
-        <div className="flex justify-center mb-8">
-          <div className="bg-indigo-600 p-4 rounded-2xl shadow-lg shadow-indigo-100">
-            <ShieldCheck className="text-white w-8 h-8" />
-          </div>
+  // --- LOADING STATE ---
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-16 w-16 border-t-4 border-indigo-600 mx-auto mb-4"></div>
+          <p className="text-slate-400 font-bold uppercase text-xs tracking-widest">Initializing TaskFlow...</p>
         </div>
-        <h2 className="text-3xl font-black text-center text-slate-900 mb-2 uppercase tracking-tighter">
-          {authMode === 'login' ? 'Welcome Back' : 'Create Account'}
-        </h2>
-        <p className="text-center text-slate-400 font-bold mb-10 text-xs uppercase tracking-widest">
-          {window.location.hostname}
-        </p>
-        
-        <form onSubmit={handleAuth} className="space-y-5">
-          {authMode === 'signup' && (
-            <div className="relative">
-              <User className="absolute left-4 top-4 text-slate-300" size={20} />
+      </div>
+    );
+  }
+
+  // --- ERROR STATE ---
+  if (errorMsg && !session) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6">
+        <div className="bg-white p-10 rounded-[2.5rem] shadow-2xl max-w-md text-center">
+          <AlertCircle className="w-16 h-16 text-red-500 mx-auto mb-4" />
+          <h2 className="text-2xl font-black mb-2 uppercase tracking-tight text-slate-900">Configuration Error</h2>
+          <p className="text-slate-600 mb-4">{errorMsg}</p>
+          <p className="text-xs text-slate-400 font-bold">Please check your environment variables and try again.</p>
+        </div>
+      </div>
+    );
+  }
+
+  // --- AUTH SCREEN ---
+  if (!session) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-indigo-50 via-slate-50 to-purple-50 p-6">
+        <div className="bg-white p-12 rounded-[3rem] shadow-2xl w-full max-w-md border border-slate-100">
+          <div className="text-center mb-10">
+            <div className="inline-flex items-center justify-center w-20 h-20 bg-indigo-600 rounded-[2rem] mb-6 shadow-xl shadow-indigo-200">
+              <ShieldCheck className="text-white" size={40} />
+            </div>
+            <h1 className="text-4xl font-black tracking-tighter uppercase mb-2 text-slate-900">TaskFlow</h1>
+            <p className="text-slate-400 text-xs font-black uppercase tracking-widest">Project Management System</p>
+          </div>
+
+          <form onSubmit={handleAuth} className="space-y-5">
+            {authMode === 'signup' && (
+              <div>
+                <label className="block text-xs font-black uppercase tracking-widest text-slate-400 mb-2">Full Name</label>
+                <input 
+                  className="w-full p-4 bg-slate-50 rounded-2xl border-2 border-transparent focus:border-indigo-600 focus:bg-white transition-all font-bold outline-none" 
+                  placeholder="Enter your name" 
+                  required 
+                  value={authData.name}
+                  onChange={e => setAuthData({...authData, name: e.target.value})} 
+                />
+              </div>
+            )}
+            
+            <div>
+              <label className="block text-xs font-black uppercase tracking-widest text-slate-400 mb-2">Email Address</label>
               <input 
-                className="w-full pl-12 pr-4 py-4 rounded-2xl bg-slate-50 border-2 border-transparent focus:border-indigo-500 outline-none font-bold transition-all"
-                placeholder="Full Name"
-                required
-                onChange={e => setAuthData({...authData, name: e.target.value})}
+                className="w-full p-4 bg-slate-50 rounded-2xl border-2 border-transparent focus:border-indigo-600 focus:bg-white transition-all font-bold outline-none" 
+                type="email" 
+                placeholder="you@company.com" 
+                required 
+                value={authData.email}
+                onChange={e => setAuthData({...authData, email: e.target.value})} 
               />
             </div>
-          )}
-          <div className="relative">
-            <Mail className="absolute left-4 top-4 text-slate-300" size={20} />
-            <input 
-              type="email"
-              className="w-full pl-12 pr-4 py-4 rounded-2xl bg-slate-50 border-2 border-transparent focus:border-indigo-500 outline-none font-bold transition-all"
-              placeholder="Email Address"
-              required
-              onChange={e => setAuthData({...authData, email: e.target.value})}
-            />
-          </div>
-          <div className="relative">
-            <Key className="absolute left-4 top-4 text-slate-300" size={20} />
-            <input 
-              type="password"
-              className="w-full pl-12 pr-4 py-4 rounded-2xl bg-slate-50 border-2 border-transparent focus:border-indigo-500 outline-none font-bold transition-all"
-              placeholder="Password"
-              required
-              onChange={e => setAuthData({...authData, password: e.target.value})}
-            />
-          </div>
-          <button className="w-full py-5 bg-indigo-600 text-white rounded-[1.5rem] font-black uppercase tracking-widest text-xs shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition-all">
-            {authMode === 'login' ? 'Authenticate' : 'Register Account'}
-          </button>
-        </form>
-        
-        <button 
-          onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
-          className="w-full mt-6 text-sm font-bold text-slate-400 hover:text-indigo-600 transition-colors"
-        >
-          {authMode === 'login' ? "Don't have an account? Sign up" : "Already have an account? Login"}
-        </button>
-      </div>
-    </div>
-  );
 
-  return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans flex flex-col md:flex-row">
-      {/* Sidebar */}
-      <nav className="w-full md:w-72 bg-white border-r p-6 flex flex-col gap-2 z-50">
-        <div className="flex items-center gap-3 mb-10 px-2">
-          <div className="bg-indigo-600 p-2.5 rounded-xl shadow-lg shadow-indigo-100">
-            <ShieldCheck className="text-white w-6 h-6" />
+            <div>
+              <label className="block text-xs font-black uppercase tracking-widest text-slate-400 mb-2">Password</label>
+              <input 
+                className="w-full p-4 bg-slate-50 rounded-2xl border-2 border-transparent focus:border-indigo-600 focus:bg-white transition-all font-bold outline-none" 
+                type="password" 
+                placeholder="••••••••" 
+                required 
+                value={authData.password}
+                onChange={e => setAuthData({...authData, password: e.target.value})} 
+              />
+            </div>
+
+            <button 
+              type="submit"
+              disabled={loading}
+              className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase tracking-widest text-xs shadow-xl shadow-indigo-200 hover:bg-indigo-700 transition-all disabled:opacity-50"
+            >
+              {loading ? 'Processing...' : authMode === 'login' ? 'Sign In' : 'Create Account'}
+            </button>
+          </form>
+
+          <div className="mt-6 text-center">
+            <button 
+              onClick={() => {
+                setAuthMode(authMode === 'login' ? 'signup' : 'login');
+                setAuthData({ email: '', password: '', name: '' });
+              }}
+              className="text-sm font-bold text-slate-400 hover:text-indigo-600 transition-colors"
+            >
+              {authMode === 'login' ? "Don't have an account? Sign up" : "Already have an account? Sign in"}
+            </button>
           </div>
-          <span className="font-black text-2xl tracking-tighter text-indigo-950 uppercase">TaskFlow</span>
+        </div>
+      </div>
+    );
+  }
+
+  // --- MAIN APP ---
+  return (
+    <div className="min-h-screen bg-slate-50 flex">
+      {/* Sidebar */}
+      <nav className="w-80 bg-white border-r border-slate-100 p-8 flex flex-col">
+        <div className="mb-12">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="p-3 bg-indigo-600 rounded-2xl shadow-lg shadow-indigo-200">
+              <ShieldCheck className="text-white" size={24} />
+            </div>
+            <h1 className="text-2xl font-black tracking-tighter uppercase">TaskFlow</h1>
+          </div>
+          <p className="text-[10px] font-black uppercase tracking-widest text-slate-300 ml-16">Management System</p>
         </div>
 
-        <div className="flex-1 space-y-2">
+        <div className="space-y-3 flex-1">
           <NavItem active={view === 'dashboard'} onClick={() => setView('dashboard')} icon={<LayoutDashboard size={20}/>} label="Dashboard" />
-          <NavItem active={view === 'tasks'} onClick={() => setView('tasks')} icon={<ListTodo size={20}/>} label={profile?.role === 'admin' ? "All Tasks" : "My Assignments"} />
+          <NavItem active={view === 'tasks'} onClick={() => setView('tasks')} icon={<ListTodo size={20}/>} label="Tasks" />
           {profile?.role === 'admin' && (
              <NavItem active={view === 'partners'} onClick={() => setView('partners')} icon={<Users size={20}/>} label="Team Management" />
           )}
@@ -307,7 +380,7 @@ const App = () => {
             </div>
             <div className="overflow-hidden">
               <p className="text-sm font-bold truncate">{profile?.name || 'User'}</p>
-              <p className="text-[10px] font-black uppercase text-indigo-500 tracking-wider">{profile?.role}</p>
+              <p className="text-[10px] font-black uppercase text-indigo-500 tracking-wider">{profile?.role || 'partner'}</p>
             </div>
           </div>
           <button 
@@ -330,7 +403,11 @@ const App = () => {
             </p>
           </div>
           {view === 'tasks' && profile?.role === 'admin' && (
-            <button className="bg-indigo-600 text-white px-8 py-4 rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl shadow-indigo-100 hover:bg-indigo-700">
+            <button 
+              onClick={() => setIsAddingTask(true)}
+              className="bg-indigo-600 text-white px-8 py-4 rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl shadow-indigo-100 hover:bg-indigo-700 flex items-center gap-2"
+            >
+              <Plus size={18} />
               Create New Task
             </button>
           )}
@@ -369,7 +446,7 @@ const App = () => {
                 <div className="bg-indigo-600 text-white p-10 rounded-[3rem] shadow-2xl shadow-indigo-200">
                   <h4 className="text-[10px] font-black uppercase tracking-widest opacity-60 mb-4">Current Partner</h4>
                   <p className="text-2xl font-black mb-2">{profile?.name}</p>
-                  <p className="text-sm font-bold opacity-80">{profile?.email}</p>
+                  <p className="text-sm font-bold opacity-80">{profile?.email || session?.user?.email}</p>
                 </div>
                 <div className="bg-white p-10 rounded-[3rem] border">
                   <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-6">Quick Overview</h4>
@@ -397,6 +474,9 @@ const App = () => {
                     <th className="px-10 py-8 text-[11px] font-black text-slate-400 uppercase tracking-widest">Assignment Detail</th>
                     <th className="px-10 py-8 text-[11px] font-black text-slate-400 uppercase tracking-widest text-center">Deadline</th>
                     <th className="px-10 py-8 text-[11px] font-black text-slate-400 uppercase tracking-widest text-right">Progress Status</th>
+                    {profile?.role === 'admin' && (
+                      <th className="px-10 py-8 text-[11px] font-black text-slate-400 uppercase tracking-widest text-right">Actions</th>
+                    )}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -423,11 +503,21 @@ const App = () => {
                           {task.status}
                         </button>
                       </td>
+                      {profile?.role === 'admin' && (
+                        <td className="px-10 py-8 text-right">
+                          <button
+                            onClick={() => handleDeleteTask(task.id)}
+                            className="p-2 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </td>
+                      )}
                     </tr>
                   ))}
                   {tasks.length === 0 && (
                     <tr>
-                      <td colSpan="3" className="px-10 py-20 text-center">
+                      <td colSpan={profile?.role === 'admin' ? "4" : "3"} className="px-10 py-20 text-center">
                         <p className="text-slate-300 font-black uppercase tracking-widest text-xs">Zero tasks in current scope</p>
                       </td>
                     </tr>
@@ -444,11 +534,11 @@ const App = () => {
               <div key={p.id} className="bg-white p-10 rounded-[3rem] border hover:shadow-xl transition-all group">
                 <div className="flex items-center gap-5 mb-8">
                   <div className="w-16 h-16 rounded-[2rem] bg-indigo-600 flex items-center justify-center text-white text-2xl font-black shadow-xl shadow-indigo-100 group-hover:scale-110 transition-transform">
-                    {p.name?.[0]}
+                    {p.name?.[0] || 'U'}
                   </div>
                   <div>
-                    <h3 className="text-xl font-black text-slate-900 tracking-tight">{p.name}</h3>
-                    <p className="text-xs font-black uppercase text-indigo-500 tracking-widest">{p.role}</p>
+                    <h3 className="text-xl font-black text-slate-900 tracking-tight">{p.name || 'User'}</h3>
+                    <p className="text-xs font-black uppercase text-indigo-500 tracking-widest">{p.role || 'partner'}</p>
                   </div>
                 </div>
                 <div className="space-y-3 pt-6 border-t border-slate-50">
@@ -461,6 +551,88 @@ const App = () => {
           </div>
         )}
       </main>
+
+      {/* Create Task Modal */}
+      {isAddingTask && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-6 z-50">
+          <div className="bg-white rounded-[3rem] p-10 max-w-2xl w-full shadow-2xl">
+            <div className="flex items-center justify-between mb-8">
+              <h2 className="text-3xl font-black uppercase tracking-tighter">Create New Task</h2>
+              <button 
+                onClick={() => setIsAddingTask(false)}
+                className="p-2 rounded-xl hover:bg-slate-100 transition-all"
+              >
+                <X size={24} />
+              </button>
+            </div>
+            
+            <form onSubmit={handleCreateTask} className="space-y-6">
+              <div>
+                <label className="block text-xs font-black uppercase tracking-widest text-slate-400 mb-2">Task Title</label>
+                <input
+                  type="text"
+                  required
+                  value={newTask.title}
+                  onChange={e => setNewTask({...newTask, title: e.target.value})}
+                  className="w-full p-4 bg-slate-50 rounded-2xl border-2 border-transparent focus:border-indigo-600 focus:bg-white transition-all font-bold outline-none"
+                  placeholder="Enter task title..."
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-black uppercase tracking-widest text-slate-400 mb-2">Project</label>
+                <input
+                  type="text"
+                  value={newTask.project}
+                  onChange={e => setNewTask({...newTask, project: e.target.value})}
+                  className="w-full p-4 bg-slate-50 rounded-2xl border-2 border-transparent focus:border-indigo-600 focus:bg-white transition-all font-bold outline-none"
+                  placeholder="Project name..."
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-black uppercase tracking-widest text-slate-400 mb-2">Assign To (User ID)</label>
+                <select
+                  value={newTask.assigned_to}
+                  onChange={e => setNewTask({...newTask, assigned_to: e.target.value})}
+                  className="w-full p-4 bg-slate-50 rounded-2xl border-2 border-transparent focus:border-indigo-600 focus:bg-white transition-all font-bold outline-none"
+                >
+                  <option value="">Select partner...</option>
+                  {partners.map(p => (
+                    <option key={p.id} value={p.id}>{p.name} ({p.email})</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-black uppercase tracking-widest text-slate-400 mb-2">Due Date</label>
+                <input
+                  type="date"
+                  value={newTask.due_date}
+                  onChange={e => setNewTask({...newTask, due_date: e.target.value})}
+                  className="w-full p-4 bg-slate-50 rounded-2xl border-2 border-transparent focus:border-indigo-600 focus:bg-white transition-all font-bold outline-none"
+                />
+              </div>
+
+              <div className="flex gap-4 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setIsAddingTask(false)}
+                  className="flex-1 py-4 bg-slate-100 text-slate-600 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-slate-200 transition-all"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl shadow-indigo-200 hover:bg-indigo-700 transition-all"
+                >
+                  Create Task
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -487,4 +659,3 @@ const StatCard = ({ label, value, icon }) => (
 );
 
 export default App;
-
