@@ -15,7 +15,8 @@ import {
   PieChart as PieIcon,
   X,
   Mail,
-  Key
+  Key,
+  AlertCircle
 } from 'lucide-react';
 import { 
   Tooltip, 
@@ -28,8 +29,9 @@ import {
 
 /**
  * APPLICATION COMPONENT
- * Fixed ReactSharedInternals error by using named imports and 
- * ensuring compatibility with the environment's React version.
+ * Fixed Redirect URL logic for Supabase Auth.
+ * Consistently using dynamic location.origin to ensure email verification
+ * links redirect back to the current environment instead of localhost.
  */
 
 let supabaseInstance = null;
@@ -161,17 +163,26 @@ const App = () => {
     e.preventDefault();
     setLoading(true);
     try {
-      const { error } = authMode === 'signup' 
-        ? await supabaseInstance.auth.signUp({ 
-            email: authData.email, 
-            password: authData.password, 
-            options: { data: { name: authData.name } } 
-          })
-        : await supabaseInstance.auth.signInWithPassword({ 
-            email: authData.email, 
-            password: authData.password 
-          });
-      if (error) throw error;
+      const redirectUrl = window.location.origin;
+
+      if (authMode === 'signup') {
+        const { error } = await supabaseInstance.auth.signUp({ 
+          email: authData.email, 
+          password: authData.password, 
+          options: { 
+            data: { name: authData.name },
+            emailRedirectTo: redirectUrl
+          } 
+        });
+        if (error) throw error;
+        alert("Verification email sent! Please check your inbox and click the link to continue.");
+      } else {
+        const { error } = await supabaseInstance.auth.signInWithPassword({ 
+          email: authData.email, 
+          password: authData.password 
+        });
+        if (error) throw error;
+      }
     } catch (err) {
       alert(err.message);
     } finally {
@@ -191,9 +202,6 @@ const App = () => {
         <ShieldCheck className="w-12 h-12 text-indigo-600 mx-auto mb-4"/>
         <h2 className="text-xl font-bold mb-2">Access Restricted</h2>
         <p className="text-slate-500 text-sm mb-4">{errorMsg}</p>
-        <div className="text-[10px] text-slate-400 font-mono bg-slate-50 p-3 rounded-lg overflow-hidden">
-          Check browser console for environment resolution logs.
-        </div>
       </div>
     </div>
   );
@@ -201,37 +209,45 @@ const App = () => {
   if (!session) return (
     <div className="min-h-screen flex items-center justify-center bg-slate-100 p-6">
       <div className="bg-white p-10 rounded-[2.5rem] shadow-2xl w-full max-w-md">
-        <h2 className="text-2xl font-black text-center mb-8 uppercase tracking-tight">TaskFlow Auth</h2>
+        <h2 className="text-2xl font-black text-center mb-2 uppercase tracking-tight">TaskFlow</h2>
+        <p className="text-center text-slate-400 text-xs font-bold mb-8 uppercase tracking-widest">Environment: {window.location.hostname}</p>
+        
         <form onSubmit={handleAuth} className="space-y-4">
           {authMode === 'signup' && (
             <input 
-              className="w-full p-4 bg-slate-50 rounded-xl border-none font-bold" 
+              className="w-full p-4 bg-slate-50 rounded-xl border-none font-bold outline-indigo-500" 
               placeholder="Name" 
+              required
               onChange={e => setAuthData({...authData, name: e.target.value})} 
             />
           )}
           <input 
-            className="w-full p-4 bg-slate-50 rounded-xl border-none font-bold" 
+            className="w-full p-4 bg-slate-50 rounded-xl border-none font-bold outline-indigo-500" 
             type="email" 
             placeholder="Email" 
+            required
             onChange={e => setAuthData({...authData, email: e.target.value})} 
           />
           <input 
-            className="w-full p-4 bg-slate-50 rounded-xl border-none font-bold" 
+            className="w-full p-4 bg-slate-50 rounded-xl border-none font-bold outline-indigo-500" 
             type="password" 
             placeholder="Password" 
+            required
             onChange={e => setAuthData({...authData, password: e.target.value})} 
           />
-          <button className="w-full py-4 bg-indigo-600 text-white rounded-xl font-bold uppercase tracking-widest text-xs shadow-lg">
-            {authMode === 'login' ? 'Authenticate' : 'Register'}
+          <button className="w-full py-4 bg-indigo-600 text-white rounded-xl font-bold uppercase tracking-widest text-xs shadow-lg hover:bg-indigo-700 transition-colors">
+            {authMode === 'login' ? 'Sign In' : 'Create Account'}
           </button>
         </form>
-        <button 
-          onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')} 
-          className="w-full mt-4 text-sm font-bold text-slate-400"
-        >
-          {authMode === 'login' ? 'Create account' : 'Have an account?'}
-        </button>
+        
+        <div className="mt-6 flex flex-col items-center gap-2">
+          <button 
+            onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')} 
+            className="text-sm font-bold text-slate-400 hover:text-indigo-600 transition-colors"
+          >
+            {authMode === 'login' ? "Don't have an account? Sign up" : "Already have an account? Login"}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -244,31 +260,34 @@ const App = () => {
         </div>
         <button 
           onClick={() => setView('dashboard')} 
-          className={`p-4 rounded-xl text-left font-bold text-xs uppercase tracking-widest ${view === 'dashboard' ? 'bg-indigo-600 text-white' : 'text-slate-400'}`}
+          className={`p-4 rounded-xl text-left font-bold text-xs uppercase tracking-widest transition-all ${view === 'dashboard' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-50'}`}
         >
           Dashboard
         </button>
         <button 
           onClick={() => setView('tasks')} 
-          className={`p-4 rounded-xl text-left font-bold text-xs uppercase tracking-widest ${view === 'tasks' ? 'bg-indigo-600 text-white' : 'text-slate-400'}`}
+          className={`p-4 rounded-xl text-left font-bold text-xs uppercase tracking-widest transition-all ${view === 'tasks' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-50'}`}
         >
           Tasks
         </button>
         <button 
           onClick={() => supabaseInstance.auth.signOut()} 
-          className="mt-auto p-4 text-left font-bold text-xs uppercase tracking-widest text-red-400"
+          className="mt-auto p-4 text-left font-bold text-xs uppercase tracking-widest text-red-400 hover:bg-red-50 rounded-xl transition-all"
         >
           <LogOut size={16} className="inline mr-2"/> Sign Out
         </button>
       </nav>
 
-      <main className="flex-1 p-8">
+      <main className="flex-1 p-8 overflow-y-auto">
         <header className="flex justify-between items-center mb-10">
-          <h1 className="text-4xl font-black uppercase tracking-tighter">{view}</h1>
+          <div>
+            <h1 className="text-4xl font-black uppercase tracking-tighter">{view}</h1>
+            <p className="text-slate-400 text-xs font-bold uppercase mt-1">{profile?.role || 'Partner'} Access</p>
+          </div>
           {view === 'tasks' && profile?.role === 'admin' && (
             <button 
               onClick={() => setIsAddingTask(true)} 
-              className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-bold text-xs"
+              className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-bold text-xs shadow-lg hover:bg-indigo-700"
             >
               NEW TASK
             </button>
@@ -276,9 +295,9 @@ const App = () => {
         </header>
 
         {view === 'dashboard' && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            <div className="bg-white p-8 rounded-3xl shadow-sm border h-[400px]">
-              <h3 className="font-bold mb-6 uppercase text-xs tracking-widest text-slate-400">Progress Breakdown</h3>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <div className="lg:col-span-2 bg-white p-8 rounded-3xl shadow-sm border h-[400px]">
+              <h3 className="font-bold mb-6 uppercase text-xs tracking-widest text-slate-400">Project Overview</h3>
               <ResponsiveContainer width="100%" height="90%">
                 <PieChart>
                   <Pie 
@@ -295,50 +314,64 @@ const App = () => {
                 </PieChart>
               </ResponsiveContainer>
             </div>
-            <div className="grid grid-cols-1 gap-4 h-fit">
-              <div className="bg-white p-6 rounded-3xl border">
-                <p className="text-[10px] font-black uppercase text-slate-400 mb-1">Total Tasks</p>
-                <p className="text-3xl font-black">{stats.total}</p>
+            <div className="space-y-4">
+              <div className="bg-white p-6 rounded-3xl border shadow-sm">
+                <p className="text-[10px] font-black uppercase text-slate-400 mb-1">Active Scope</p>
+                <p className="text-4xl font-black tracking-tighter">{stats.total}</p>
               </div>
-              <div className="bg-white p-6 rounded-3xl border">
+              <div className="bg-white p-6 rounded-3xl border shadow-sm">
                 <p className="text-[10px] font-black uppercase text-slate-400 mb-1">Completed</p>
-                <p className="text-3xl font-black text-emerald-500">{stats.completed}</p>
+                <p className="text-4xl font-black text-emerald-500 tracking-tighter">{stats.completed}</p>
+              </div>
+              <div className="bg-indigo-600 p-6 rounded-3xl shadow-lg text-white">
+                <p className="text-[10px] font-black uppercase opacity-60 mb-1">Partner</p>
+                <p className="text-xl font-bold truncate">{profile?.name || 'Loading...'}</p>
               </div>
             </div>
           </div>
         )}
 
         {view === 'tasks' && (
-          <div className="bg-white rounded-3xl border overflow-hidden">
-            <table className="w-full text-left">
-              <thead className="bg-slate-50 text-[10px] font-black uppercase text-slate-400">
-                <tr>
-                  <th className="p-6">Task</th>
-                  <th className="p-6">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {tasks.map(t => (
-                  <tr key={t.id} className="hover:bg-slate-50 transition-colors">
-                    <td className="p-6 font-bold">{t.title}</td>
-                    <td className="p-6">
-                      <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase ${
-                        t.status === 'Completed' ? 'bg-emerald-100 text-emerald-600' : 
-                        t.status === 'In Progress' ? 'bg-amber-100 text-amber-600' : 
-                        'bg-slate-100 text-slate-600'
-                      }`}>
-                        {t.status}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-                {tasks.length === 0 && (
+          <div className="bg-white rounded-3xl border shadow-sm overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead className="bg-slate-50 text-[10px] font-black uppercase text-slate-400">
                   <tr>
-                    <td colSpan="2" className="p-10 text-center text-slate-400 font-bold">No tasks found.</td>
+                    <th className="p-6">Project / Task</th>
+                    <th className="p-6">Status</th>
+                    <th className="p-6">Deadline</th>
                   </tr>
-                )}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {tasks.map(t => (
+                    <tr key={t.id} className="hover:bg-slate-50 transition-colors">
+                      <td className="p-6">
+                        <div className="font-bold text-slate-900">{t.title}</div>
+                        <div className="text-[10px] font-bold text-indigo-500 uppercase">{t.project}</div>
+                      </td>
+                      <td className="p-6">
+                        <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase border ${
+                          t.status === 'Completed' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 
+                          t.status === 'In Progress' ? 'bg-amber-50 text-amber-600 border-amber-100' : 
+                          'bg-slate-50 text-slate-500 border-slate-100'
+                        }`}>
+                          {t.status}
+                        </span>
+                      </td>
+                      <td className="p-6 text-xs font-bold text-slate-400">{t.due_date || 'No date'}</td>
+                    </tr>
+                  ))}
+                  {tasks.length === 0 && (
+                    <tr>
+                      <td colSpan="3" className="p-12 text-center text-slate-400 font-bold uppercase text-xs tracking-widest">
+                        <AlertCircle className="mx-auto mb-2 opacity-20" size={32}/>
+                        No assignments found
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
       </main>
@@ -346,9 +379,8 @@ const App = () => {
   );
 };
 
-// Fixed entry point to prevent ReactSharedInternals TypeError
-const container = document.getElementById('root');
-if (container) {
-  const root = createRoot(container);
-  root.render(<App />);
+// Start the application using a safe container check
+const rootContainer = document.getElementById('root');
+if (rootContainer) {
+  createRoot(rootContainer).render(<App />);
 }
