@@ -17,9 +17,17 @@ import {
   Mail,
   Key,
   ChevronRight,
-  AlertCircle
+  AlertCircle,
+  BarChart3,
+  Briefcase,
+  UserPlus
 } from 'lucide-react';
 import { 
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
   Tooltip, 
   ResponsiveContainer, 
   PieChart, 
@@ -46,7 +54,12 @@ const App = () => {
   const [tasks, setTasks] = useState([]);
   const [partners, setPartners] = useState([]);
   const [isAddingTask, setIsAddingTask] = useState(false);
+  const [isAddingPartner, setIsAddingPartner] = useState(false);
   const [newTask, setNewTask] = useState({ title: '', project: 'General', assigned_to: '', due_date: '' });
+  const [newPartner, setNewPartner] = useState({ name: '', email: '', password: '' });
+
+  // --- ROLE-BASED ACCESS CONTROL ---
+  const isAdmin = profile?.role === 'admin';
 
   // --- INITIALIZATION ---
   useEffect(() => {
@@ -68,11 +81,14 @@ const App = () => {
             url = import.meta.env.VITE_SUPABASE_URL || '';
             key = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
           }
-        } catch (e) {}
+        } catch (e) {
+          url = window.VITE_SUPABASE_URL || '';
+          key = window.VITE_SUPABASE_ANON_KEY || '';
+        }
 
         if (!url || !key) {
           if (isMounted) {
-            setErrorMsg("Supabase credentials missing in environment variables.");
+            setErrorMsg("Supabase credentials missing. Please add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to your .env file.");
             setLoading(false);
           }
           return;
@@ -93,8 +109,9 @@ const App = () => {
         const { data: { subscription } } = supabaseInstance.auth.onAuthStateChange((_event, session) => {
           if (isMounted) {
             setSession(session);
-            if (session) fetchProfile(session.user.id);
-            else {
+            if (session) {
+              fetchProfile(session.user.id);
+            } else {
               setProfile(null);
               setTasks([]);
               setPartners([]);
@@ -104,8 +121,9 @@ const App = () => {
 
         return () => subscription.unsubscribe();
       } catch (err) {
+        console.error('Initialization error:', err);
         if (isMounted) {
-          setErrorMsg("Failed to initialize database connection.");
+          setErrorMsg("Failed to initialize database connection: " + err.message);
           setLoading(false);
         }
       }
@@ -118,6 +136,12 @@ const App = () => {
       script.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
       script.async = true;
       script.onload = initSupabase;
+      script.onerror = () => {
+        if (isMounted) {
+          setErrorMsg("Failed to load Supabase SDK from CDN.");
+          setLoading(false);
+        }
+      };
       document.body.appendChild(script);
     } else {
       initSupabase();
@@ -130,37 +154,83 @@ const App = () => {
   useEffect(() => {
     if (session && profile && supabaseInstance) {
       fetchTasks();
-      if (profile.role === 'admin') fetchPartners();
+      if (profile.role === 'admin') {
+        fetchPartners();
+      }
     }
   }, [session, profile]);
 
   // --- DB HELPERS ---
   const fetchProfile = async (userId) => {
     try {
-      const { data } = await supabaseInstance.from('profiles').select('*').eq('id', userId).single();
+      const { data, error } = await supabaseInstance
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .single();
+      
+      if (error) throw error;
       if (data) setProfile(data);
     } catch (err) {
       console.error("Error fetching profile:", err);
+      if (err.code === 'PGRST116') {
+        try {
+          const user = await supabaseInstance.auth.getUser();
+          const { data: newProfile, error: insertError } = await supabaseInstance
+            .from('profiles')
+            .insert([{
+              id: userId,
+              name: user.data.user?.user_metadata?.name || 'User',
+              email: user.data.user?.email,
+              role: 'partner'
+            }])
+            .select()
+            .single();
+          
+          if (!insertError && newProfile) {
+            setProfile(newProfile);
+          }
+        } catch (insertErr) {
+          console.error("Error creating profile:", insertErr);
+        }
+      }
     }
   };
 
   const fetchTasks = async () => {
     try {
       let query = supabaseInstance.from('tasks').select('*');
-      if (profile?.role !== 'admin') query = query.eq('assigned_to', session.user.id);
-      const { data } = await query.order('created_at', { ascending: false });
-      if (data) setTasks(data || []);
+      
+      // CRITICAL: Role-based data scoping
+      // Partners ONLY see tasks assigned to them
+      // Admins see ALL tasks
+      if (profile?.role === 'partner') {
+        query = query.eq('assigned_to', session.user.id);
+      }
+      // If admin, no filter is applied - they see everything
+      
+      const { data, error } = await query.order('created_at', { ascending: false });
+      
+      if (error) throw error;
+      setTasks(data || []);
     } catch (err) {
       console.error("Error fetching tasks:", err);
+      setTasks([]);
     }
   };
 
   const fetchPartners = async () => {
     try {
-      const { data } = await supabaseInstance.from('profiles').select('*');
-      if (data) setPartners(data || []);
+      const { data, error } = await supabaseInstance
+        .from('profiles')
+        .select('*')
+        .order('created_at', { ascending: false });
+      
+      if (error) throw error;
+      setPartners(data || []);
     } catch (err) {
       console.error("Error fetching partners:", err);
+      setPartners([]);
     }
   };
 
@@ -168,11 +238,12 @@ const App = () => {
     e.preventDefault();
     setLoading(true);
     setErrorMsg('');
+    
     try {
       const redirectUrl = window.location.origin;
 
       if (authMode === 'signup') {
-        const { error } = await supabaseInstance.auth.signUp({
+        const { data, error } = await supabaseInstance.auth.signUp({
           email: authData.email,
           password: authData.password,
           options: { 
@@ -180,16 +251,24 @@ const App = () => {
             emailRedirectTo: redirectUrl
           }
         });
+        
         if (error) throw error;
-        alert("Verification email sent! Please check your inbox to activate your account.");
+        
+        if (data?.user) {
+          alert("Account created! Please check your email to verify your account.");
+          setAuthMode('login');
+          setAuthData({ email: '', password: '', name: '' });
+        }
       } else {
-        const { error } = await supabaseInstance.auth.signInWithPassword({
+        const { data, error } = await supabaseInstance.auth.signInWithPassword({
           email: authData.email,
           password: authData.password,
         });
+        
         if (error) throw error;
       }
     } catch (err) {
+      console.error('Auth error:', err);
       setErrorMsg(err.message);
       alert(err.message);
     } finally {
@@ -198,55 +277,201 @@ const App = () => {
   };
 
   const toggleTaskStatus = async (task) => {
-    const nextStatus = task.status === 'Pending' ? 'In Progress' : task.status === 'In Progress' ? 'Completed' : 'Pending';
-    const { error } = await supabaseInstance.from('tasks').update({ status: nextStatus }).eq('id', task.id);
-    if (!error) fetchTasks();
-    else alert("Failed to update task status");
+    try {
+      const statusOrder = ['Pending', 'In Progress', 'Completed'];
+      const currentIndex = statusOrder.indexOf(task.status);
+      const nextStatus = statusOrder[(currentIndex + 1) % statusOrder.length];
+      
+      const { error } = await supabaseInstance
+        .from('tasks')
+        .update({ status: nextStatus })
+        .eq('id', task.id);
+      
+      if (error) throw error;
+      
+      await fetchTasks();
+    } catch (err) {
+      console.error('Error updating task:', err);
+      alert("Failed to update task status: " + err.message);
+    }
   };
 
   const handleCreateTask = async (e) => {
     e.preventDefault();
+    
+    if (!isAdmin) {
+      alert("Only admins can create tasks");
+      return;
+    }
+    
     try {
-      const { error } = await supabaseInstance.from('tasks').insert([{
-        ...newTask,
+      const taskData = {
+        title: newTask.title,
+        project: newTask.project || 'General',
+        assigned_to: newTask.assigned_to || null,
+        due_date: newTask.due_date || null,
         created_by: session.user.id,
         status: 'Pending'
-      }]);
+      };
+      
+      const { error } = await supabaseInstance
+        .from('tasks')
+        .insert([taskData]);
+      
       if (error) throw error;
+      
       setIsAddingTask(false);
       setNewTask({ title: '', project: 'General', assigned_to: '', due_date: '' });
-      fetchTasks();
+      await fetchTasks();
+      alert('Task created successfully!');
     } catch (err) {
+      console.error('Error creating task:', err);
       alert("Failed to create task: " + err.message);
     }
   };
 
   const handleDeleteTask = async (taskId) => {
+    if (!isAdmin) {
+      alert("Only admins can delete tasks");
+      return;
+    }
+    
     if (!confirm("Are you sure you want to delete this task?")) return;
-    const { error } = await supabaseInstance.from('tasks').delete().eq('id', taskId);
-    if (!error) fetchTasks();
-    else alert("Failed to delete task");
+    
+    try {
+      const { error } = await supabaseInstance
+        .from('tasks')
+        .delete()
+        .eq('id', taskId);
+      
+      if (error) throw error;
+      
+      await fetchTasks();
+      alert('Task deleted successfully!');
+    } catch (err) {
+      console.error('Error deleting task:', err);
+      alert("Failed to delete task: " + err.message);
+    }
   };
 
-  // --- STATS ---
+  const handleAddPartner = async (e) => {
+    e.preventDefault();
+    
+    if (!isAdmin) {
+      alert("Only admins can add partners");
+      return;
+    }
+    
+    try {
+      // Create auth user first
+      const { data: authData, error: authError } = await supabaseInstance.auth.signUp({
+        email: newPartner.email,
+        password: newPartner.password,
+        options: {
+          data: { name: newPartner.name },
+          emailRedirectTo: window.location.origin
+        }
+      });
+      
+      if (authError) throw authError;
+      
+      setIsAddingPartner(false);
+      setNewPartner({ name: '', email: '', password: '' });
+      
+      // Wait a bit for the trigger to create the profile
+      setTimeout(async () => {
+        await fetchPartners();
+      }, 1000);
+      
+      alert('Partner added successfully! They will receive a verification email.');
+    } catch (err) {
+      console.error('Error adding partner:', err);
+      alert("Failed to add partner: " + err.message);
+    }
+  };
+
+  const handleRemovePartner = async (partnerId) => {
+    if (!isAdmin) {
+      alert("Only admins can remove partners");
+      return;
+    }
+    
+    if (!confirm("Are you sure you want to remove this partner? All their tasks will be deleted.")) return;
+    
+    try {
+      // First delete all tasks assigned to this partner
+      const { error: tasksError } = await supabaseInstance
+        .from('tasks')
+        .delete()
+        .eq('assigned_to', partnerId);
+      
+      if (tasksError) throw tasksError;
+      
+      // Delete the profile
+      const { error: profileError } = await supabaseInstance
+        .from('profiles')
+        .delete()
+        .eq('id', partnerId);
+      
+      if (profileError) throw profileError;
+      
+      await fetchPartners();
+      await fetchTasks();
+      alert('Partner removed successfully!');
+    } catch (err) {
+      console.error('Error removing partner:', err);
+      alert("Failed to remove partner: " + err.message);
+    }
+  };
+
+  const getPartnerName = (partnerId) => {
+    const partner = partners.find(p => p.id === partnerId);
+    return partner?.name || 'Unassigned';
+  };
+
+  // --- STATS (Context-aware based on accessible tasks) ---
   const stats = useMemo(() => {
     const total = tasks.length;
     const completed = tasks.filter(t => t.status === 'Completed').length;
     const inProgress = tasks.filter(t => t.status === 'In Progress').length;
     const pending = tasks.filter(t => t.status === 'Pending').length;
     
+    const statusData = [
+      { name: 'Pending', value: pending },
+      { name: 'In Progress', value: inProgress },
+      { name: 'Completed', value: completed },
+    ].filter(item => item.value > 0);
+
+    // Project aggregation
+    const projectAgg = tasks.reduce((acc, task) => {
+      if (!acc[task.project]) acc[task.project] = { name: task.project, total: 0, done: 0 };
+      acc[task.project].total += 1;
+      if (task.status === 'Completed') acc[task.project].done += 1;
+      return acc;
+    }, {});
+
+    const projectProgressData = Object.values(projectAgg).map(p => ({
+      name: p.name,
+      progress: Math.round((p.done / (p.total || 1)) * 100),
+      label: `${p.done}/${p.total} Done`
+    }));
+
+    // Partner task distribution (admin only)
+    const partnerData = isAdmin ? partners.map(p => {
+      const partnerTasks = tasks.filter(t => t.assigned_to === p.id);
+      return { name: p.name, tasks: partnerTasks.length };
+    }) : [];
+    
     return {
       total,
       completed,
       inProgress,
       pending,
-      statusData: [
-        { name: 'Pending', value: pending },
-        { name: 'In Progress', value: inProgress },
-        { name: 'Completed', value: completed },
-      ]
+      statusData,
+      projectProgressData,
+      partnerData
     };
-  }, [tasks]);
+  }, [tasks, partners, isAdmin]);
 
   // --- LOADING STATE ---
   if (loading) {
@@ -339,6 +564,7 @@ const App = () => {
               onClick={() => {
                 setAuthMode(authMode === 'login' ? 'signup' : 'login');
                 setAuthData({ email: '', password: '', name: '' });
+                setErrorMsg('');
               }}
               className="text-sm font-bold text-slate-400 hover:text-indigo-600 transition-colors"
             >
@@ -366,17 +592,36 @@ const App = () => {
         </div>
 
         <div className="space-y-3 flex-1">
-          <NavItem active={view === 'dashboard'} onClick={() => setView('dashboard')} icon={<LayoutDashboard size={20}/>} label="Dashboard" />
-          <NavItem active={view === 'tasks'} onClick={() => setView('tasks')} icon={<ListTodo size={20}/>} label="Tasks" />
-          {profile?.role === 'admin' && (
-             <NavItem active={view === 'partners'} onClick={() => setView('partners')} icon={<Users size={20}/>} label="Team Management" />
+          <NavItem 
+            active={view === 'dashboard'} 
+            onClick={() => setView('dashboard')} 
+            icon={<LayoutDashboard size={20}/>} 
+            label="Dashboard" 
+          />
+          <NavItem 
+            active={view === 'tasks'} 
+            onClick={() => setView('tasks')} 
+            icon={<ListTodo size={20}/>} 
+            label={isAdmin ? "All Tasks" : "My Tasks"} 
+          />
+          
+          {isAdmin && (
+            <div className="pt-4 border-t border-slate-100">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-4 mb-2">Admin Tools</p>
+              <NavItem 
+                active={view === 'partners'} 
+                onClick={() => setView('partners')} 
+                icon={<Users size={20}/>} 
+                label="Team Management" 
+              />
+            </div>
           )}
         </div>
 
         <div className="mt-auto pt-6 border-t border-slate-100">
           <div className="p-4 bg-slate-50 rounded-2xl flex items-center gap-3 mb-4">
             <div className="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center text-white font-black shrink-0">
-              {profile?.name?.[0] || 'U'}
+              {profile?.name?.[0]?.toUpperCase() || 'U'}
             </div>
             <div className="overflow-hidden">
               <p className="text-sm font-bold truncate">{profile?.name || 'User'}</p>
@@ -397,70 +642,124 @@ const App = () => {
       <main className="flex-1 p-8 md:p-12 max-w-7xl mx-auto w-full overflow-y-auto">
         <header className="flex flex-col md:flex-row md:items-end justify-between gap-6 mb-12">
           <div>
-            <h1 className="text-5xl font-black text-slate-900 tracking-tighter uppercase mb-2">{view}</h1>
+            <h1 className="text-5xl font-black text-slate-900 tracking-tighter uppercase mb-2">
+              {view === 'dashboard' ? 'Overview' : view === 'tasks' ? (isAdmin ? 'All Tasks' : 'My Tasks') : 'Partners'}
+            </h1>
             <p className="text-slate-400 font-bold uppercase text-xs tracking-widest">
-              {profile?.role === 'admin' ? 'Administrative Control' : 'Standard Access'}
+              {isAdmin 
+                ? (view === 'dashboard' ? 'Consolidated project metrics' : view === 'tasks' ? 'Full visibility of all deliverables' : 'Administer user access')
+                : (view === 'dashboard' ? 'Your personal performance metrics' : 'Tasks assigned to your profile')
+              }
             </p>
           </div>
-          {view === 'tasks' && profile?.role === 'admin' && (
-            <button 
-              onClick={() => setIsAddingTask(true)}
-              className="bg-indigo-600 text-white px-8 py-4 rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl shadow-indigo-100 hover:bg-indigo-700 flex items-center gap-2"
-            >
-              <Plus size={18} />
-              Create New Task
-            </button>
-          )}
+          
+          <div className="flex gap-2">
+            {view === 'tasks' && isAdmin && (
+              <button 
+                onClick={() => setIsAddingTask(true)}
+                className="bg-indigo-600 text-white px-8 py-4 rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl shadow-indigo-100 hover:bg-indigo-700 flex items-center gap-2"
+              >
+                <Plus size={18} />
+                Create New Task
+              </button>
+            )}
+            {view === 'partners' && isAdmin && (
+              <button 
+                onClick={() => setIsAddingPartner(true)}
+                className="bg-emerald-600 text-white px-8 py-4 rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl shadow-emerald-100 hover:bg-emerald-700 flex items-center gap-2"
+              >
+                <UserPlus size={18} />
+                Add Partner
+              </button>
+            )}
+          </div>
         </header>
 
         {view === 'dashboard' && (
           <div className="space-y-10">
             {/* Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <StatCard label="Total Tasks" value={stats.total} icon={<ListTodo className="text-indigo-500" />} />
-              <StatCard label="Active" value={stats.total - stats.completed} icon={<Clock className="text-amber-500" />} />
-              <StatCard label="Completed" value={stats.completed} icon={<CheckCircle2 className="text-emerald-500" />} />
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+              <StatCard 
+                label={isAdmin ? "Total Tasks" : "My Tasks"} 
+                value={stats.total} 
+                icon={<ListTodo className="text-indigo-500" />} 
+              />
+              <StatCard 
+                label="Active" 
+                value={stats.total - stats.completed} 
+                icon={<Clock className="text-amber-500" />} 
+              />
+              <StatCard 
+                label="Completed" 
+                value={stats.completed} 
+                icon={<CheckCircle2 className="text-emerald-500" />} 
+              />
+              <StatCard 
+                label={isAdmin ? "Team Members" : "Partners"} 
+                value={partners.length} 
+                icon={<Users className="text-blue-500" />} 
+              />
             </div>
 
-            {/* Chart */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-              <div className="lg:col-span-2 bg-white p-10 rounded-[3rem] border shadow-sm">
-                <div className="flex items-center gap-3 mb-10">
-                  <div className="p-3 bg-indigo-50 rounded-2xl text-indigo-600"><PieIcon size={20}/></div>
-                  <h3 className="font-black text-slate-800 uppercase text-xs tracking-widest">Efficiency Metrics</h3>
-                </div>
-                <div className="h-[350px] w-full">
+            {/* Charts */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              <ChartWrapper title={isAdmin ? "Task Status Distribution" : "My Task Status"} icon={<PieIcon size={18}/>}>
+                {stats.total > 0 ? (
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
-                      <Pie data={stats.statusData} innerRadius={80} outerRadius={110} paddingAngle={8} dataKey="value">
-                        {stats.statusData.map((e, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
+                      <Pie 
+                        data={stats.statusData} 
+                        innerRadius={60} 
+                        outerRadius={80} 
+                        paddingAngle={5} 
+                        dataKey="value"
+                      >
+                        {stats.statusData.map((entry, i) => (
+                          <Cell key={`cell-${i}`} fill={COLORS[i % COLORS.length]} />
+                        ))}
                       </Pie>
                       <Tooltip />
-                      <Legend verticalAlign="middle" align="right" layout="vertical" />
+                      <Legend verticalAlign="bottom" height={36} />
                     </PieChart>
                   </ResponsiveContainer>
-                </div>
-              </div>
-
-              <div className="space-y-6">
-                <div className="bg-indigo-600 text-white p-10 rounded-[3rem] shadow-2xl shadow-indigo-200">
-                  <h4 className="text-[10px] font-black uppercase tracking-widest opacity-60 mb-4">Current Partner</h4>
-                  <p className="text-2xl font-black mb-2">{profile?.name}</p>
-                  <p className="text-sm font-bold opacity-80">{profile?.email || session?.user?.email}</p>
-                </div>
-                <div className="bg-white p-10 rounded-[3rem] border">
-                  <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-6">Quick Overview</h4>
-                  <div className="space-y-4">
-                     <div className="flex justify-between items-center text-sm font-bold">
-                       <span className="text-slate-500">Task Completion Rate</span>
-                       <span>{stats.total > 0 ? Math.round((stats.completed/stats.total)*100) : 0}%</span>
-                     </div>
-                     <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
-                       <div className="bg-emerald-500 h-full transition-all duration-1000" style={{width: `${stats.total > 0 ? (stats.completed/stats.total)*100 : 0}%`}}></div>
-                     </div>
+                ) : (
+                  <div className="flex items-center justify-center h-full">
+                    <p className="text-slate-300 font-black uppercase tracking-widest text-xs">No tasks to display</p>
                   </div>
-                </div>
-              </div>
+                )}
+              </ChartWrapper>
+
+              <ChartWrapper title={isAdmin ? "Project Health" : "My Project Progress"} icon={<Briefcase size={18}/>}>
+                {stats.projectProgressData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart layout="vertical" data={stats.projectProgressData} margin={{ left: 20 }}>
+                      <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} stroke="#f1f5f9" />
+                      <XAxis type="number" domain={[0, 100]} axisLine={false} tickLine={false} />
+                      <YAxis type="category" dataKey="name" axisLine={false} tickLine={false} width={80} />
+                      <Tooltip cursor={{fill: '#f8fafc'}} />
+                      <Bar dataKey="progress" fill="#10b981" radius={[0, 4, 4, 0]} barSize={30} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="flex items-center justify-center h-full">
+                    <p className="text-slate-300 font-black uppercase tracking-widest text-xs">No project data</p>
+                  </div>
+                )}
+              </ChartWrapper>
+
+              {isAdmin && stats.partnerData.length > 0 && (
+                <ChartWrapper title="Team Resource Allocation" icon={<BarChart3 size={18}/>} className="lg:col-span-2">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={stats.partnerData}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                      <XAxis dataKey="name" axisLine={false} tickLine={false} />
+                      <YAxis axisLine={false} tickLine={false} />
+                      <Tooltip cursor={{fill: '#f8fafc'}} />
+                      <Bar dataKey="tasks" fill="#6366f1" radius={[12, 12, 0, 0]} barSize={60} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </ChartWrapper>
+              )}
             </div>
           </div>
         )}
@@ -471,10 +770,11 @@ const App = () => {
               <table className="w-full text-left">
                 <thead className="bg-slate-50/50 border-b">
                   <tr>
-                    <th className="px-10 py-8 text-[11px] font-black text-slate-400 uppercase tracking-widest">Assignment Detail</th>
-                    <th className="px-10 py-8 text-[11px] font-black text-slate-400 uppercase tracking-widest text-center">Deadline</th>
-                    <th className="px-10 py-8 text-[11px] font-black text-slate-400 uppercase tracking-widest text-right">Progress Status</th>
-                    {profile?.role === 'admin' && (
+                    <th className="px-10 py-8 text-[11px] font-black text-slate-400 uppercase tracking-widest">Task Details</th>
+                    {isAdmin && <th className="px-10 py-8 text-[11px] font-black text-slate-400 uppercase tracking-widest">Assigned To</th>}
+                    <th className="px-10 py-8 text-[11px] font-black text-slate-400 uppercase tracking-widest text-center">Due Date</th>
+                    <th className="px-10 py-8 text-[11px] font-black text-slate-400 uppercase tracking-widest text-right">Status</th>
+                    {isAdmin && (
                       <th className="px-10 py-8 text-[11px] font-black text-slate-400 uppercase tracking-widest text-right">Actions</th>
                     )}
                   </tr>
@@ -486,11 +786,26 @@ const App = () => {
                         <p className="text-xl font-black text-slate-900 mb-1">{task.title}</p>
                         <div className="flex items-center gap-2">
                           <Tag size={12} className="text-indigo-400" />
-                          <span className="text-[10px] font-black uppercase text-indigo-500 tracking-wider bg-indigo-50 px-2 py-0.5 rounded-md">{task.project}</span>
+                          <span className="text-[10px] font-black uppercase text-indigo-500 tracking-wider bg-indigo-50 px-2 py-0.5 rounded-md">
+                            {task.project}
+                          </span>
                         </div>
                       </td>
-                      <td className="px-10 py-8 text-center font-bold text-slate-400 text-sm">
-                        {task.due_date || 'N/A'}
+                      {isAdmin && (
+                        <td className="px-10 py-8">
+                          <div className="flex items-center gap-2">
+                            <div className="w-6 h-6 rounded-full bg-slate-100 flex items-center justify-center text-[10px] font-bold text-slate-500">
+                              {getPartnerName(task.assigned_to)[0]}
+                            </div>
+                            <span className="text-sm font-semibold text-slate-700">{getPartnerName(task.assigned_to)}</span>
+                          </div>
+                        </td>
+                      )}
+                      <td className="px-10 py-8 text-center">
+                        <div className="flex items-center justify-center gap-2 text-sm text-slate-500 font-medium">
+                          <Calendar size={14} />
+                          {task.due_date || 'N/A'}
+                        </div>
                       </td>
                       <td className="px-10 py-8 text-right">
                         <button 
@@ -503,7 +818,7 @@ const App = () => {
                           {task.status}
                         </button>
                       </td>
-                      {profile?.role === 'admin' && (
+                      {isAdmin && (
                         <td className="px-10 py-8 text-right">
                           <button
                             onClick={() => handleDeleteTask(task.id)}
@@ -517,8 +832,10 @@ const App = () => {
                   ))}
                   {tasks.length === 0 && (
                     <tr>
-                      <td colSpan={profile?.role === 'admin' ? "4" : "3"} className="px-10 py-20 text-center">
-                        <p className="text-slate-300 font-black uppercase tracking-widest text-xs">Zero tasks in current scope</p>
+                      <td colSpan={isAdmin ? "5" : "3"} className="px-10 py-20 text-center">
+                        <p className="text-slate-300 font-black uppercase tracking-widest text-xs">
+                          {isAdmin ? 'No tasks found' : 'No tasks assigned to you'}
+                        </p>
                       </td>
                     </tr>
                   )}
@@ -528,13 +845,19 @@ const App = () => {
           </div>
         )}
 
-        {view === 'partners' && (
+        {view === 'partners' && isAdmin && (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {partners.map(p => (
-              <div key={p.id} className="bg-white p-10 rounded-[3rem] border hover:shadow-xl transition-all group">
+              <div key={p.id} className="bg-white p-10 rounded-[3rem] border hover:shadow-xl transition-all group relative">
+                <button 
+                  onClick={() => handleRemovePartner(p.id)}
+                  className="absolute top-4 right-4 text-slate-200 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"
+                >
+                  <X size={20} />
+                </button>
                 <div className="flex items-center gap-5 mb-8">
                   <div className="w-16 h-16 rounded-[2rem] bg-indigo-600 flex items-center justify-center text-white text-2xl font-black shadow-xl shadow-indigo-100 group-hover:scale-110 transition-transform">
-                    {p.name?.[0] || 'U'}
+                    {p.name?.[0]?.toUpperCase() || 'U'}
                   </div>
                   <div>
                     <h3 className="text-xl font-black text-slate-900 tracking-tight">{p.name || 'User'}</h3>
@@ -545,53 +868,59 @@ const App = () => {
                   <div className="flex items-center gap-2 text-slate-400 text-sm font-bold">
                     <Mail size={14} /> {p.email}
                   </div>
+                  <div className="grid grid-cols-2 gap-2 mt-4">
+                    <div className="bg-slate-50 p-3 rounded-xl">
+                      <p className="text-[10px] font-black text-slate-400 uppercase">Tasks</p>
+                      <p className="text-xl font-bold text-slate-900">{tasks.filter(t => t.assigned_to === p.id).length}</p>
+                    </div>
+                    <div className="bg-slate-50 p-3 rounded-xl">
+                      <p className="text-[10px] font-black text-slate-400 uppercase">Joined</p>
+                      <p className="text-sm font-bold text-slate-900">{p.created_at?.split('T')[0] || 'N/A'}</p>
+                    </div>
+                  </div>
                 </div>
               </div>
             ))}
+            {partners.length === 0 && (
+              <div className="col-span-full text-center py-20">
+                <p className="text-slate-300 font-black uppercase tracking-widest text-xs">No team members found</p>
+              </div>
+            )}
           </div>
         )}
       </main>
 
       {/* Create Task Modal */}
-      {isAddingTask && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-6 z-50">
-          <div className="bg-white rounded-[3rem] p-10 max-w-2xl w-full shadow-2xl">
-            <div className="flex items-center justify-between mb-8">
-              <h2 className="text-3xl font-black uppercase tracking-tighter">Create New Task</h2>
-              <button 
-                onClick={() => setIsAddingTask(false)}
-                className="p-2 rounded-xl hover:bg-slate-100 transition-all"
-              >
-                <X size={24} />
-              </button>
-            </div>
-            
-            <form onSubmit={handleCreateTask} className="space-y-6">
-              <div>
-                <label className="block text-xs font-black uppercase tracking-widest text-slate-400 mb-2">Task Title</label>
-                <input
-                  type="text"
-                  required
-                  value={newTask.title}
-                  onChange={e => setNewTask({...newTask, title: e.target.value})}
-                  className="w-full p-4 bg-slate-50 rounded-2xl border-2 border-transparent focus:border-indigo-600 focus:bg-white transition-all font-bold outline-none"
-                  placeholder="Enter task title..."
-                />
-              </div>
+      {isAddingTask && isAdmin && (
+        <Modal title="Create New Task" onClose={() => setIsAddingTask(false)}>
+          <form onSubmit={handleCreateTask} className="space-y-6">
+            <Input
+              label="Task Title"
+              type="text"
+              required
+              value={newTask.title}
+              onChange={e => setNewTask({...newTask, title: e.target.value})}
+              placeholder="Enter task title..."
+            />
 
-              <div>
-                <label className="block text-xs font-black uppercase tracking-widest text-slate-400 mb-2">Project</label>
-                <input
-                  type="text"
-                  value={newTask.project}
-                  onChange={e => setNewTask({...newTask, project: e.target.value})}
-                  className="w-full p-4 bg-slate-50 rounded-2xl border-2 border-transparent focus:border-indigo-600 focus:bg-white transition-all font-bold outline-none"
-                  placeholder="Project name..."
-                />
-              </div>
+            <Input
+              label="Project"
+              type="text"
+              value={newTask.project}
+              onChange={e => setNewTask({...newTask, project: e.target.value})}
+              placeholder="Project name..."
+            />
 
-              <div>
-                <label className="block text-xs font-black uppercase tracking-widest text-slate-400 mb-2">Assign To (User ID)</label>
+            <div className="grid grid-cols-2 gap-4">
+              <Input
+                label="Due Date"
+                type="date"
+                value={newTask.due_date}
+                onChange={e => setNewTask({...newTask, due_date: e.target.value})}
+              />
+
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Assign To</label>
                 <select
                   value={newTask.assigned_to}
                   onChange={e => setNewTask({...newTask, assigned_to: e.target.value})}
@@ -603,35 +932,81 @@ const App = () => {
                   ))}
                 </select>
               </div>
+            </div>
 
-              <div>
-                <label className="block text-xs font-black uppercase tracking-widest text-slate-400 mb-2">Due Date</label>
-                <input
-                  type="date"
-                  value={newTask.due_date}
-                  onChange={e => setNewTask({...newTask, due_date: e.target.value})}
-                  className="w-full p-4 bg-slate-50 rounded-2xl border-2 border-transparent focus:border-indigo-600 focus:bg-white transition-all font-bold outline-none"
-                />
-              </div>
+            <div className="flex gap-4 pt-4">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsAddingTask(false);
+                  setNewTask({ title: '', project: 'General', assigned_to: '', due_date: '' });
+                }}
+                className="flex-1 py-4 bg-slate-100 text-slate-600 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-slate-200 transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl shadow-indigo-200 hover:bg-indigo-700 transition-all"
+              >
+                Create Task
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
 
-              <div className="flex gap-4 pt-4">
-                <button
-                  type="button"
-                  onClick={() => setIsAddingTask(false)}
-                  className="flex-1 py-4 bg-slate-100 text-slate-600 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-slate-200 transition-all"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl shadow-indigo-200 hover:bg-indigo-700 transition-all"
-                >
-                  Create Task
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+      {/* Add Partner Modal */}
+      {isAddingPartner && isAdmin && (
+        <Modal title="Add New Partner" onClose={() => setIsAddingPartner(false)}>
+          <form onSubmit={handleAddPartner} className="space-y-6">
+            <Input
+              label="Full Name"
+              type="text"
+              required
+              value={newPartner.name}
+              onChange={e => setNewPartner({...newPartner, name: e.target.value})}
+              placeholder="Partner's full name"
+            />
+
+            <Input
+              label="Email Address"
+              type="email"
+              required
+              value={newPartner.email}
+              onChange={e => setNewPartner({...newPartner, email: e.target.value})}
+              placeholder="partner@example.com"
+            />
+
+            <Input
+              label="Password"
+              type="password"
+              required
+              value={newPartner.password}
+              onChange={e => setNewPartner({...newPartner, password: e.target.value})}
+              placeholder="••••••••"
+            />
+
+            <div className="flex gap-4 pt-4">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsAddingPartner(false);
+                  setNewPartner({ name: '', email: '', password: '' });
+                }}
+                className="flex-1 py-4 bg-slate-100 text-slate-600 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-slate-200 transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="flex-1 py-4 bg-emerald-600 text-white rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl shadow-emerald-200 hover:bg-emerald-700 transition-all"
+              >
+                Add Partner
+              </button>
+            </div>
+          </form>
+        </Modal>
       )}
     </div>
   );
@@ -641,7 +1016,9 @@ const App = () => {
 const NavItem = ({ active, onClick, icon, label }) => (
   <button 
     onClick={onClick} 
-    className={`w-full flex items-center gap-4 px-6 py-4 rounded-2xl transition-all font-black text-xs uppercase tracking-widest ${active ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-50'}`}
+    className={`w-full flex items-center gap-4 px-6 py-4 rounded-2xl transition-all font-black text-xs uppercase tracking-widest ${
+      active ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-50'
+    }`}
   >
     {icon} <span>{label}</span>
     {active && <ChevronRight className="ml-auto opacity-50" size={16} />}
@@ -655,6 +1032,43 @@ const StatCard = ({ label, value, icon }) => (
       <p className="text-5xl font-black text-slate-900 tracking-tighter">{value}</p>
     </div>
     <div className="bg-slate-50 p-6 rounded-[2rem] group-hover:bg-indigo-50 transition-all">{icon}</div>
+  </div>
+);
+
+const ChartWrapper = ({ title, icon, children, className }) => (
+  <div className={`bg-white p-10 rounded-[3rem] border shadow-sm ${className || ''}`}>
+    <div className="flex items-center gap-3 mb-10">
+      <div className="p-3 bg-indigo-50 rounded-2xl text-indigo-600">{icon}</div>
+      <h3 className="font-black text-slate-800 uppercase text-xs tracking-widest">{title}</h3>
+    </div>
+    <div className="h-[300px] w-full">{children}</div>
+  </div>
+);
+
+const Modal = ({ title, children, onClose }) => (
+  <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-6 z-50">
+    <div className="bg-white rounded-[3rem] p-10 max-w-2xl w-full shadow-2xl">
+      <div className="flex items-center justify-between mb-8">
+        <h2 className="text-3xl font-black uppercase tracking-tighter">{title}</h2>
+        <button 
+          onClick={onClose}
+          className="p-2 rounded-xl hover:bg-slate-100 transition-all"
+        >
+          <X size={24} />
+        </button>
+      </div>
+      {children}
+    </div>
+  </div>
+);
+
+const Input = ({ label, ...props }) => (
+  <div className="space-y-2">
+    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{label}</label>
+    <input 
+      {...props} 
+      className="w-full p-4 bg-slate-50 rounded-2xl border-2 border-transparent focus:border-indigo-600 focus:bg-white transition-all font-bold outline-none placeholder:text-slate-300"
+    />
   </div>
 );
 
