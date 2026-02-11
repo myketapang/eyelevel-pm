@@ -1,12 +1,36 @@
-name: Unzip Project
-on: [push] # Or whatever trigger you prefer
+name: Unzip and Commit Files
+
+on:
+  workflow_dispatch: # Allows you to run this manually from the "Actions" tab
 
 jobs:
-  unzip-job:
+  unzip-and-push:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # Necessary to push changes back to the repo
+    
     steps:
-      - name: Checkout code
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: "Unzip my archive"
-        run: unzip -o EyeLevel-Refine.zip -d .
+      - name: Unzip Archive
+        run: |
+          # -o overwrites existing files without asking
+          # -d . extracts directly into the root directory
+          unzip -o EyeLevel-Refine.zip -d .
+
+      - name: Commit and Push Changes
+        run: |
+          git config --global user.name "myketapang"
+          git config --global user.email "myketapang@gmail.com"
+          
+          # Stage the unzipped files
+          git add .
+          
+          # Only commit if there are actually changes to avoid errors
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Auto-unzipped EyeLevel-Refine.zip"
+            git push
+          fi
