@@ -1,2 +1,2 @@
-- name: Unzip my archive
-  run: unzip EyeLevel-Refine.zip -d .
+- name: "Unzip my archive"
+  run: unzip -o EyeLevel-Refine.zip -d .
