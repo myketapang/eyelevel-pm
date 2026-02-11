@@ -1,2 +1,12 @@
-- name: "Unzip my archive"
-  run: unzip -o EyeLevel-Refine.zip -d .
+name: Unzip Project
+on: [push] # Or whatever trigger you prefer
+
+jobs:
+  unzip-job:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: "Unzip my archive"
+        run: unzip -o EyeLevel-Refine.zip -d .
